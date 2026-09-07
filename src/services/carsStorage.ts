@@ -1,5 +1,7 @@
 import { Car, CarStatus, CustomerInquiry } from '../types';
 
+import { deleteImagesByUrls, isDataUrl } from './imageUploadService';
+
 import {
   db,
   doc,
@@ -133,6 +135,130 @@ const INITIAL_INQUIRIES: CustomerInquiry[] = [
 
 
 // =========================
+// ERRORS & VALIDATION
+// =========================
+
+/** Lỗi phát sinh khi đọc/ghi kho xe trên Firestore. */
+export class CarStorageError extends Error {
+  public readonly cause?: unknown;
+
+  constructor(message: string, cause?: unknown) {
+    super(message);
+    this.name = 'CarStorageError';
+    this.cause = cause;
+  }
+}
+
+/** Lỗi dữ liệu xe không hợp lệ. `errors` chứa danh sách thông báo hiển thị được cho người dùng. */
+export class CarValidationError extends Error {
+  public readonly errors: string[];
+
+  constructor(errors: string[]) {
+    super(errors.join(' '));
+    this.name = 'CarValidationError';
+    this.errors = errors;
+  }
+}
+
+const VALID_CATEGORIES: Car['category'][] = [
+  'sedan',
+  'suv',
+  'mpv',
+  'hatchback',
+  'pickup',
+];
+
+const VALID_STATUSES: CarStatus[] = ['available', 'reserved', 'sold'];
+
+/**
+ * Kiểm tra dữ liệu xe trước khi ghi lên Firestore.
+ *
+ * - `create`: bắt buộc phải có tên, phân khúc, giá và ảnh.
+ * - `update`: chỉ kiểm tra những trường thực sự được gửi lên, vì bản ghi cũ
+ *   đã có sẵn các giá trị còn lại.
+ *
+ * Trả về mảng thông báo lỗi (rỗng nghĩa là hợp lệ).
+ */
+export function validateCarInput(
+  data: Partial<Car>,
+  mode: 'create' | 'update'
+): string[] {
+  const errors: string[] = [];
+  const isCreate = mode === 'create';
+  const has = (key: keyof Car) => data[key] !== undefined && data[key] !== null;
+
+  // --- Tên xe ---
+  if (isCreate || has('name')) {
+    const name = (data.name || '').trim();
+    if (!name) {
+      errors.push('Tên xe không được để trống.');
+    } else if (name.length < 2) {
+      errors.push('Tên xe phải có ít nhất 2 ký tự.');
+    } else if (name.length > 120) {
+      errors.push('Tên xe không được vượt quá 120 ký tự.');
+    }
+  }
+
+  // --- Phân khúc ---
+  if (isCreate || has('category')) {
+    if (!data.category || !VALID_CATEGORIES.includes(data.category)) {
+      errors.push(
+        `Phân khúc xe không hợp lệ (chỉ chấp nhận: ${VALID_CATEGORIES.join(', ')}).`
+      );
+    }
+  }
+
+  // --- Giá ---
+  if (isCreate || has('priceRaw')) {
+    const price = Number(data.priceRaw);
+    if (!Number.isFinite(price) || price <= 0) {
+      errors.push('Giá xe phải là một số lớn hơn 0.');
+    } else if (price > 100_000_000_000) {
+      errors.push('Giá xe vượt quá giới hạn cho phép.');
+    }
+  }
+
+  // --- Ảnh ---
+  if (isCreate || has('image') || has('images')) {
+    const gallery = data.images && data.images.length > 0
+      ? data.images
+      : data.image
+        ? [data.image]
+        : [];
+    if (gallery.length === 0) {
+      errors.push('Xe phải có ít nhất 1 hình ảnh.');
+    }
+
+    // Firestore giới hạn 1MB mỗi document. Ảnh base64 nhúng thẳng sẽ phá vỡ
+    // giới hạn này, nên ảnh bắt buộc phải là URL (Cloud Storage hoặc bên ngoài).
+    if (gallery.some(isDataUrl)) {
+      errors.push(
+        'Ảnh phải được tải lên máy chủ trước khi lưu (không chấp nhận ảnh nhúng base64).'
+      );
+    }
+  }
+
+  // --- Năm sản xuất ---
+  if (has('year')) {
+    const year = Number(data.year);
+    const maxYear = new Date().getFullYear() + 2;
+    if (!Number.isInteger(year) || year < 1900 || year > maxYear) {
+      errors.push(`Năm sản xuất phải nằm trong khoảng 1900 - ${maxYear}.`);
+    }
+  }
+
+  // --- Trạng thái ---
+  if (has('status') && !VALID_STATUSES.includes(data.status as CarStatus)) {
+    errors.push(
+      `Trạng thái xe không hợp lệ (chỉ chấp nhận: ${VALID_STATUSES.join(', ')}).`
+    );
+  }
+
+  return errors;
+}
+
+
+// =========================
 // CARS STORAGE SERVICE
 // =========================
 
@@ -164,7 +290,11 @@ export const CarsStorageService = {
         error
       );
 
-      return [];
+      // Ném lỗi lên trên để UI phân biệt được "lỗi tải" và "kho xe trống".
+      throw new CarStorageError(
+        'Không thể tải danh sách xe từ máy chủ. Vui lòng kiểm tra kết nối và thử lại.',
+        error
+      );
     }
   },
 
@@ -209,6 +339,16 @@ export const CarsStorageService = {
   async saveCar(
     carData: Partial<Car>
   ): Promise<Car> {
+
+    // Chặn dữ liệu hỏng ngay tại cửa ngõ, thay vì âm thầm điền giá trị mặc định.
+    const validationErrors = validateCarInput(
+      carData,
+      carData.id ? 'update' : 'create'
+    );
+
+    if (validationErrors.length > 0) {
+      throw new CarValidationError(validationErrors);
+    }
 
     const now = new Date().toISOString();
 
@@ -521,6 +661,11 @@ export const CarsStorageService = {
 
     try {
 
+      // Lấy danh sách ảnh trước khi xoá bản ghi, nếu không sẽ mất dấu file
+      // trên Storage và chúng nằm lại vĩnh viễn.
+      const existing = await this.getCarById(id);
+
+
       await deleteDoc(
         doc(
           db,
@@ -528,6 +673,19 @@ export const CarsStorageService = {
           id
         )
       );
+
+
+      // Xoá ảnh sau khi bản ghi đã mất. Ảnh xoá lỗi chỉ tốn dung lượng,
+      // còn bản ghi xoá lỗi mới là vấn đề thực sự — nên không chặn ở đây.
+      if (existing) {
+        const urls = existing.images && existing.images.length > 0
+          ? existing.images
+          : existing.image
+            ? [existing.image]
+            : [];
+
+        void deleteImagesByUrls(urls);
+      }
 
 
       this.notifyChange();

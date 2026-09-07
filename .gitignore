@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+server.js
+*.tsbuildinfo
+
+# Biến môi trường (.env.example vẫn được commit làm mẫu)
+.env
+.env.local
+.env.*.local
+
+# IDE / OS
+.vs/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

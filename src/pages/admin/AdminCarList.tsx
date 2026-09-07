@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Car, CarStatus } from '../../types';
+import { Car, CarStatus, StaffPermissions } from '../../types';
 import { 
   Search, 
   Plus, 
@@ -16,6 +16,8 @@ import {
 
 interface AdminCarListProps {
   cars: Car[];
+  /** Quyen cua quan tri vien dang dang nhap. Bo trong = tai khoan goc, toan quyen. */
+  permissions?: StaffPermissions;
   onAddNewCar: () => void;
   onEditCar: (car: Car) => void;
   onDeleteCar: (id: string) => void;
@@ -24,12 +26,19 @@ interface AdminCarListProps {
 
 export const AdminCarList: React.FC<AdminCarListProps> = ({
   cars,
+  permissions,
   onAddNewCar,
   onEditCar,
   onDeleteCar,
   onUpdateStatus,
 }) => {
   const safeCars = Array.isArray(cars) ? cars : [];
+
+  // Khong co ban ghi quyen nghia la tai khoan admin goc => cho phep tat ca.
+  const canAdd = !permissions || permissions.cars_add;
+  const canEdit = !permissions || permissions.cars_edit;
+  const canDelete = !permissions || permissions.cars_delete;
+  const canChangeStatus = !permissions || permissions.cars_change_status;
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [brandFilter, setBrandFilter] = useState<string>('all');
@@ -112,13 +121,15 @@ export const AdminCarList: React.FC<AdminCarListProps> = ({
           </p>
         </div>
 
-        <button
-          onClick={onAddNewCar}
-          className="px-5 py-2.5 bg-[#17212B] hover:bg-[#C8A96B] text-white hover:text-[#17212B] font-bold text-xs uppercase tracking-wider rounded-lg transition-all shadow-sm flex items-center justify-center gap-2 cursor-pointer shrink-0"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Thêm Xe Mới</span>
-        </button>
+        {canAdd && (
+          <button
+            onClick={onAddNewCar}
+            className="px-5 py-2.5 bg-[#17212B] hover:bg-[#C8A96B] text-white hover:text-[#17212B] font-bold text-xs uppercase tracking-wider rounded-lg transition-all shadow-sm flex items-center justify-center gap-2 cursor-pointer shrink-0"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Thêm Xe Mới</span>
+          </button>
+        )}
       </div>
 
       {/* Filter & Search Bar */}
@@ -302,9 +313,18 @@ export const AdminCarList: React.FC<AdminCarListProps> = ({
                           <div className="relative inline-block">
                             <select
                               value={currentStatus}
+                              disabled={!canChangeStatus}
                               onChange={(e) => onUpdateStatus(car.id, e.target.value as CarStatus)}
-                              className="text-[10px] py-1 px-1.5 rounded bg-white border border-[#E2E5E8] text-[#17212B] focus:outline-none focus:border-[#C8A96B] cursor-pointer hover:border-[#C8A96B]"
-                              title="Thay đổi trạng thái nhanh"
+                              className={`text-[10px] py-1 px-1.5 rounded bg-white border border-[#E2E5E8] text-[#17212B] focus:outline-none focus:border-[#C8A96B] ${
+                                canChangeStatus
+                                  ? 'cursor-pointer hover:border-[#C8A96B]'
+                                  : 'opacity-50 cursor-not-allowed'
+                              }`}
+                              title={
+                                canChangeStatus
+                                  ? 'Thay đổi trạng thái nhanh'
+                                  : 'Bạn không có quyền đổi trạng thái xe'
+                              }
                             >
                               <option value="available">Đang bán</option>
                               <option value="reserved">Đặt cọc</option>
@@ -317,20 +337,27 @@ export const AdminCarList: React.FC<AdminCarListProps> = ({
                       {/* Actions: Edit & Delete */}
                       <td className="py-3 px-4 text-right">
                         <div className="inline-flex items-center gap-1.5">
-                          <button
-                            onClick={() => onEditCar(car)}
-                            className="p-1.5 rounded-md hover:bg-[#FAF8F5] text-[#17212B] hover:text-[#C8A96B] border border-transparent hover:border-[#E2E5E8] transition-colors cursor-pointer"
-                            title="Chỉnh sửa thông tin xe"
-                          >
-                            <Edit3 className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => setCarToDelete(car)}
-                            className="p-1.5 rounded-md hover:bg-red-50 text-red-500 hover:text-red-700 border border-transparent hover:border-red-200 transition-colors cursor-pointer"
-                            title="Xóa xe khỏi danh sách"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
+                          {canEdit && (
+                            <button
+                              onClick={() => onEditCar(car)}
+                              className="p-1.5 rounded-md hover:bg-[#FAF8F5] text-[#17212B] hover:text-[#C8A96B] border border-transparent hover:border-[#E2E5E8] transition-colors cursor-pointer"
+                              title="Chỉnh sửa thông tin xe"
+                            >
+                              <Edit3 className="w-4 h-4" />
+                            </button>
+                          )}
+                          {canDelete && (
+                            <button
+                              onClick={() => setCarToDelete(car)}
+                              className="p-1.5 rounded-md hover:bg-red-50 text-red-500 hover:text-red-700 border border-transparent hover:border-red-200 transition-colors cursor-pointer"
+                              title="Xóa xe khỏi danh sách"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                          {!canEdit && !canDelete && (
+                            <span className="text-[10px] text-[#8C95A0] italic">Chỉ xem</span>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -393,8 +420,12 @@ export const AdminCarList: React.FC<AdminCarListProps> = ({
                 <div className="p-4 pt-0 border-t border-[#E2E5E8] mt-3 flex items-center justify-between gap-2">
                   <select
                     value={currentStatus}
+                    disabled={!canChangeStatus}
                     onChange={(e) => onUpdateStatus(car.id, e.target.value as CarStatus)}
-                    className="text-[11px] py-1.5 px-2 rounded-lg bg-[#FAF8F5] border border-[#E2E5E8] text-[#17212B] focus:outline-none focus:border-[#C8A96B] cursor-pointer flex-1"
+                    className={`text-[11px] py-1.5 px-2 rounded-lg bg-[#FAF8F5] border border-[#E2E5E8] text-[#17212B] focus:outline-none focus:border-[#C8A96B] flex-1 ${
+                      canChangeStatus ? 'cursor-pointer' : 'opacity-50 cursor-not-allowed'
+                    }`}
+                    title={canChangeStatus ? undefined : 'Bạn không có quyền đổi trạng thái xe'}
                   >
                     <option value="available">Đang bán</option>
                     <option value="reserved">Đặt cọc</option>
@@ -402,20 +433,24 @@ export const AdminCarList: React.FC<AdminCarListProps> = ({
                   </select>
 
                   <div className="flex items-center gap-1">
-                    <button
-                      onClick={() => onEditCar(car)}
-                      className="px-3 py-1.5 rounded-lg bg-[#17212B] hover:bg-[#C8A96B] text-white hover:text-[#17212B] text-xs font-bold transition-colors cursor-pointer flex items-center gap-1"
-                    >
-                      <Edit3 className="w-3.5 h-3.5" />
-                      <span>Sửa</span>
-                    </button>
-                    <button
-                      onClick={() => setCarToDelete(car)}
-                      className="p-1.5 rounded-lg hover:bg-red-50 text-red-500 hover:text-red-700 border border-[#E2E5E8] transition-colors cursor-pointer"
-                      title="Xóa xe"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    {canEdit && (
+                      <button
+                        onClick={() => onEditCar(car)}
+                        className="px-3 py-1.5 rounded-lg bg-[#17212B] hover:bg-[#C8A96B] text-white hover:text-[#17212B] text-xs font-bold transition-colors cursor-pointer flex items-center gap-1"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                        <span>Sửa</span>
+                      </button>
+                    )}
+                    {canDelete && (
+                      <button
+                        onClick={() => setCarToDelete(car)}
+                        className="p-1.5 rounded-lg hover:bg-red-50 text-red-500 hover:text-red-700 border border-[#E2E5E8] transition-colors cursor-pointer"
+                        title="Xóa xe"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>

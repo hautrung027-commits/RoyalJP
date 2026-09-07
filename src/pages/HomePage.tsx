@@ -15,7 +15,8 @@ import {
   Gauge,
   CheckCircle2,
   Calendar,
-  Layers
+  Layers,
+  AlertCircle
 } from 'lucide-react';
 import { Hero } from '../components/Hero';
 import { HomeCarGallery } from '../components/HomeCarGallery';
@@ -38,11 +39,12 @@ export const HomePage: React.FC<HomePageProps> = ({
   const isJa = i18n.language === 'ja';
 
   // Real-time cars inventory from Admin / Storage
-  const carsDataResult = useCars();
-
-const carsData = Array.isArray(carsDataResult)
-  ? carsDataResult
-  : [];
+  const {
+    cars: carsData,
+    isLoading: isLoadingCars,
+    error: carsError,
+    refetch: refetchCars,
+  } = useCars();
   const [activeCategory, setActiveCategory] = useState<CarCategory>('all');
   const [showAllInHome, setShowAllInHome] = useState(false);
 
@@ -217,8 +219,39 @@ const carsData = Array.isArray(carsDataResult)
             </div>
           </div>
 
-          {/* Quick Cards Grid or Empty Notice */}
-          {filteredCategoryCars.length === 0 ? (
+          {/* Quick Cards Grid, Loading Skeleton, Error or Empty Notice */}
+          {isLoadingCars ? (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 sm:gap-6">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div
+                  key={i}
+                  className="animate-pulse bg-white/5 border border-white/10 rounded-xl overflow-hidden"
+                >
+                  <div className="aspect-[4/3] bg-white/10" />
+                  <div className="p-4 space-y-2">
+                    <div className="h-3 w-2/3 bg-white/10 rounded-sm" />
+                    <div className="h-3 w-1/3 bg-white/10 rounded-sm" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : carsError ? (
+            <div className="text-center py-12 px-4 bg-white/5 border border-white/10 rounded-xl">
+              <AlertCircle className="w-8 h-8 text-[#C8A96B] mx-auto mb-3" />
+              <p className="text-sm font-serif font-bold text-white mb-1">
+                {isJa ? '車両情報を読み込めませんでした' : 'Không tải được danh sách xe'}
+              </p>
+              <p className="text-xs text-[#B8C0C7] max-w-md mx-auto mb-4">
+                {carsError}
+              </p>
+              <button
+                onClick={() => refetchCars()}
+                className="px-4 py-2 bg-[#C8A96B] hover:bg-[#DDBF7A] text-[#17212B] text-xs font-bold uppercase tracking-wider rounded-sm transition-colors cursor-pointer"
+              >
+                {isJa ? '再読み込み' : 'Thử lại'}
+              </button>
+            </div>
+          ) : filteredCategoryCars.length === 0 ? (
             <div className="text-center py-12 px-4 bg-white/5 border border-white/10 rounded-xl">
               <Sparkles className="w-8 h-8 text-[#C8A96B] mx-auto mb-3" />
               <p className="text-sm font-serif font-bold text-white mb-1">
