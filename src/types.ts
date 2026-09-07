@@ -56,7 +56,7 @@ export type StaffRole =
 
 export type StaffStatus = 'active' | 'suspended' | 'resigned';
 
-export type ShowroomBranch = 'Tokyo Roppongi' | 'Yokohama' | 'Osaka';
+export type ShowroomBranch = 'Tokyo Roppongi' | 'Yokohama' | 'Osaka' | 'ROYAL JPcar';
 
 export interface StaffPermissions {
   // QUẢN LÝ XE
