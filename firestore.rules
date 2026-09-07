@@ -18,7 +18,8 @@ rules_version = '2';
 // Những gì file này đang bảo vệ được:
 //   - Chặn ghi ẩn danh vào kho xe / cài đặt.
 //   - Ràng buộc kiểu và giá trị dữ liệu xe (giá > 0, đủ trường bắt buộc).
-//   - Chặn ảnh base64 nhúng thẳng vào document (xem imageUploadService.ts).
+//   - Chặn ảnh base64 nhúng thẳng vào document. Ảnh được lưu trên Cloudinary,
+//     Firestore chỉ giữ URL (xem src/services/imageUploadService.ts).
 //   - Chặn một tài khoản ghi đè document nhân viên của người khác.
 //   - Chặn đọc trộm thông tin liên hệ khách hàng khi chưa đăng nhập.
 // ============================================================================

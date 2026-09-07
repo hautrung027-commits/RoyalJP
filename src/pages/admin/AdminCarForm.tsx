@@ -149,7 +149,7 @@ export const AdminCarForm: React.FC<AdminCarFormProps> = ({
   }, [carToEdit]);
 
   /**
-   * Nen va tai anh len Cloud Storage, roi luu URL vao danh sach.
+   * Nen va tai anh len Cloudinary, roi luu URL vao danh sach.
    *
    * Truoc day anh duoc doc thanh base64 va nhet thang vao document Firestore,
    * nhung Firestore gioi han 1MB/document nen chi mot tam anh dien thoai da
@@ -744,8 +744,8 @@ export const AdminCarForm: React.FC<AdminCarFormProps> = ({
                 Chọn ảnh từ máy tính (Có thể chọn nhiều ảnh cùng lúc)
               </span>
               <span className="text-[11px] text-[#69727C] mt-1">
-                JPG, PNG, WebP, AVIF — tối đa 25MB/ảnh. Ảnh được tự động nén và
-                lưu trên Cloud Storage.
+                JPG, PNG, WebP, AVIF — tối đa 25MB/ảnh. Ảnh được tự động nén
+                trước khi tải lên.
               </span>
               <input
                 type="file"

@@ -230,7 +230,7 @@ export function validateCarInput(
     }
 
     // Firestore giới hạn 1MB mỗi document. Ảnh base64 nhúng thẳng sẽ phá vỡ
-    // giới hạn này, nên ảnh bắt buộc phải là URL (Cloud Storage hoặc bên ngoài).
+    // giới hạn này, nên ảnh bắt buộc phải là URL (Cloudinary hoặc link ngoài).
     if (gallery.some(isDataUrl)) {
       errors.push(
         'Ảnh phải được tải lên máy chủ trước khi lưu (không chấp nhận ảnh nhúng base64).'
