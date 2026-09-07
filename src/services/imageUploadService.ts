@@ -1,18 +1,18 @@
-import {
-  auth,
-  storage,
-  storageRef,
-  uploadBytesResumable,
-  getDownloadURL,
-  deleteObject,
-} from '../lib/firebase';
-
 /**
- * DỊCH VỤ ẢNH XE
+ * DỊCH VỤ ẢNH XE — Cloudinary (unsigned upload)
  *
  * Firestore giới hạn 1MB cho mỗi document, nên ảnh KHÔNG được nhúng dưới dạng
  * base64 vào bản ghi xe (một tấm ảnh điện thoại đã vượt giới hạn).
- * Ảnh được nén ở trình duyệt rồi tải lên Cloud Storage; Firestore chỉ lưu URL.
+ * Ảnh được nén ở trình duyệt rồi tải lên Cloudinary; Firestore chỉ lưu URL.
+ *
+ * Vì sao Cloudinary mà không phải Firebase Storage: từ cuối 2024 Firebase bắt
+ * buộc gói Blaze (phải gắn thẻ thanh toán) mới tạo được Storage bucket.
+ * Cloudinary cho upload thẳng từ trình duyệt qua "unsigned upload preset",
+ * không cần backend và không cần thẻ.
+ *
+ * CẤU HÌNH (xem .env.example):
+ *   VITE_CLOUDINARY_CLOUD_NAME     — tên cloud, lấy ở Dashboard
+ *   VITE_CLOUDINARY_UPLOAD_PRESET  — tên preset, phải đặt Signing Mode = Unsigned
  */
 
 /** Cạnh dài nhất của ảnh sau khi nén. Đủ cho ảnh hero full-width. */
@@ -39,6 +39,9 @@ export const ACCEPTED_IMAGE_TYPES = [
   'image/avif',
 ];
 
+const CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME as string | undefined;
+const UPLOAD_PRESET = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET as string | undefined;
+
 export class ImageUploadError extends Error {
   constructor(message: string, public readonly cause?: unknown) {
     super(message);
@@ -46,53 +49,32 @@ export class ImageUploadError extends Error {
   }
 }
 
-/**
- * Dịch mã lỗi của Firebase Storage sang thông báo nói rõ nguyên nhân và cách xử lý.
- *
- * Không có bảng này thì mọi sự cố cấu hình đều hiện ra như "storage/unknown",
- * rất khó đoán đang thiếu bước nào.
- */
-function describeStorageError(error: any, fileName: string): string {
-  const code: string = error?.code || '';
-
-  switch (code) {
-    case 'storage/unauthorized':
-      return (
-        `Không có quyền tải ảnh lên. Phiên đăng nhập hiện tại không phải phiên ` +
-        `Firebase Auth thật (đăng nhập bằng mật khẩu dự phòng sẽ không tạo phiên này), ` +
-        `hoặc storage.rules chưa được publish.`
-      );
-
-    case 'storage/unauthenticated':
-      return 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại rồi thử lại.';
-
-    case 'storage/retry-limit-exceeded':
-      return `Tải ảnh "${fileName}" quá lâu và đã bị huỷ. Kiểm tra kết nối mạng rồi thử lại.`;
-
-    case 'storage/canceled':
-      return `Đã huỷ tải ảnh "${fileName}".`;
-
-    case 'storage/quota-exceeded':
-      return 'Dung lượng lưu trữ của dự án đã hết. Vui lòng kiểm tra gói Firebase.';
-
-    case 'storage/unknown':
-      return (
-        `Không kết nối được tới Cloud Storage. Nguyên nhân thường gặp: chưa bật ` +
-        `Storage cho dự án trong Firebase Console (Build → Storage → Get started).`
-      );
-
-    default:
-      return `Không tải được ảnh "${fileName}" lên máy chủ${code ? ` (${code})` : ''}.`;
-  }
+/** Cấu hình Cloudinary đã có đủ chưa. */
+export function isUploadConfigured(): boolean {
+  return Boolean(CLOUD_NAME && UPLOAD_PRESET);
 }
 
-/** URL trỏ tới Cloud Storage của dự án (ảnh do ta quản lý, xoá được). */
+/** Mô tả tình trạng cấu hình, dùng cho công cụ chẩn đoán. */
+export function describeUploadConfig(): string {
+  if (!CLOUD_NAME && !UPLOAD_PRESET) {
+    return 'Chưa cấu hình VITE_CLOUDINARY_CLOUD_NAME và VITE_CLOUDINARY_UPLOAD_PRESET.';
+  }
+  if (!CLOUD_NAME) return 'Thiếu VITE_CLOUDINARY_CLOUD_NAME.';
+  if (!UPLOAD_PRESET) return 'Thiếu VITE_CLOUDINARY_UPLOAD_PRESET.';
+  return `cloud="${CLOUD_NAME}", preset="${UPLOAD_PRESET}"`;
+}
+
+/** URL trỏ tới Cloudinary (ảnh do ta quản lý). */
+export function isCloudinaryUrl(url: string): boolean {
+  return typeof url === 'string' && url.includes('res.cloudinary.com');
+}
+
+/**
+ * Ảnh nằm trên kho lưu trữ của chúng ta (không phải link ngoài như Unsplash).
+ * Giữ tên cũ để các module khác không phải đổi theo.
+ */
 export function isStorageUrl(url: string): boolean {
-  return (
-    typeof url === 'string' &&
-    (url.includes('firebasestorage.googleapis.com') ||
-      url.includes('firebasestorage.app'))
-  );
+  return isCloudinaryUrl(url);
 }
 
 /** Chuỗi base64 nhúng thẳng — dạng dữ liệu cũ cần loại bỏ. */
@@ -152,7 +134,7 @@ function canvasToBlob(canvas: HTMLCanvasElement, quality: number): Promise<Blob>
  *
  * Giảm cạnh dài nhất về {@link MAX_DIMENSION}, xuất JPEG, và hạ dần chất lượng
  * cho tới khi đạt {@link TARGET_BYTES}. Trả về chính file gốc nếu trình duyệt
- * không giải mã được (ví dụ HEIC) — Storage vẫn nhận, chỉ là không tối ưu.
+ * không giải mã được (ví dụ HEIC) — Cloudinary vẫn nhận, chỉ là không tối ưu.
  */
 export async function compressImage(file: File): Promise<Blob> {
   try {
@@ -190,22 +172,65 @@ export async function compressImage(file: File): Promise<Blob> {
   }
 }
 
-function buildStoragePath(ownerId: string, file: File): string {
-  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-  const safeName = file.name
-    .replace(/\.[^.]+$/, '')
-    .replace(/[^a-zA-Z0-9-_]/g, '-')
-    .slice(0, 40) || 'image';
+/**
+ * Token xoá do Cloudinary trả về khi upload unsigned.
+ *
+ * Đây là cách DUY NHẤT xoá được ảnh mà không cần API secret (tức không cần
+ * backend). Token chỉ sống 10 phút, nên chỉ dùng được cho tình huống người
+ * dùng vừa tải ảnh lên rồi đổi ý gỡ ra ngay trong lúc điền form.
+ */
+const deleteTokens = new Map<string, string>();
 
-  return `cars/${ownerId}/${unique}-${safeName}.jpg`;
+type CloudinaryResponse = {
+  secure_url?: string;
+  url?: string;
+  delete_token?: string;
+  error?: { message?: string };
+};
+
+function describeUploadError(status: number, body: string, fileName: string): string {
+  let serverMessage = '';
+  try {
+    serverMessage = (JSON.parse(body) as CloudinaryResponse).error?.message || '';
+  } catch {
+    serverMessage = '';
+  }
+
+  if (status === 400 && /preset/i.test(serverMessage)) {
+    return (
+      `Upload preset không hợp lệ. Kiểm tra VITE_CLOUDINARY_UPLOAD_PRESET và ` +
+      `đảm bảo preset đó đang để Signing Mode = Unsigned. (${serverMessage})`
+    );
+  }
+
+  if (status === 401 || status === 403) {
+    return (
+      `Cloudinary từ chối yêu cầu. Preset nhiều khả năng đang để chế độ Signed ` +
+      `thay vì Unsigned. (${serverMessage || status})`
+    );
+  }
+
+  if (status === 404) {
+    return `Không tìm thấy cloud "${CLOUD_NAME}". Kiểm tra lại VITE_CLOUDINARY_CLOUD_NAME.`;
+  }
+
+  if (status === 420 || status === 429) {
+    return 'Đã vượt hạn mức Cloudinary. Vui lòng thử lại sau.';
+  }
+
+  return `Không tải được ảnh "${fileName}" lên Cloudinary${
+    serverMessage ? `: ${serverMessage}` : ` (HTTP ${status})`
+  }.`;
 }
 
 /**
- * Nén rồi tải một ảnh lên Cloud Storage.
+ * Nén rồi tải một ảnh lên Cloudinary.
+ *
+ * Dùng XMLHttpRequest thay vì fetch vì chỉ XHR mới báo được tiến độ upload.
  *
  * @param ownerId Thư mục nhóm ảnh — id xe, hoặc id bản nháp khi thêm xe mới.
  * @param onProgress Nhận tiến độ 0-100.
- * @returns URL tải về, dùng làm giá trị cho `Car.image` / `Car.images`.
+ * @returns URL ảnh, dùng làm giá trị cho `Car.image` / `Car.images`.
  */
 export async function uploadCarImage(
   file: File,
@@ -217,69 +242,103 @@ export async function uploadCarImage(
     throw new ImageUploadError(validationError);
   }
 
-  // Kiểm tra sớm: storage.rules yêu cầu request.auth != null. Không có phiên
-  // Firebase Auth thì báo ngay thay vì để người dùng chờ hết tiến trình nén
-  // và tải rồi mới nhận một lỗi khó hiểu.
-  if (!auth.currentUser) {
+  if (!isUploadConfigured()) {
     throw new ImageUploadError(
-      'Chưa có phiên đăng nhập Firebase Auth nên không thể tải ảnh lên. ' +
-        'Vui lòng đăng xuất và đăng nhập lại bằng tài khoản Firebase thật.'
+      'Chưa cấu hình dịch vụ lưu ảnh. Cần đặt VITE_CLOUDINARY_CLOUD_NAME và ' +
+        'VITE_CLOUDINARY_UPLOAD_PRESET trong biến môi trường rồi khởi động lại.'
     );
   }
 
   const blob = await compressImage(file);
-  const path = buildStoragePath(ownerId, file);
-  const fileRef = storageRef(storage, path);
 
-  const task = uploadBytesResumable(fileRef, blob, {
-    contentType: 'image/jpeg',
-    cacheControl: 'public, max-age=31536000',
-  });
+  const form = new FormData();
+  form.append('file', blob);
+  form.append('upload_preset', UPLOAD_PRESET as string);
+  form.append('folder', `royaljpcar/cars/${ownerId}`);
+
+  const endpoint = `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`;
 
   return new Promise<string>((resolve, reject) => {
-    task.on(
-      'state_changed',
-      (snapshot) => {
-        if (onProgress && snapshot.totalBytes > 0) {
-          onProgress(
-            Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100)
-          );
-        }
-      },
-      (error) => {
-        console.error('Lỗi tải ảnh lên Storage:', error);
-        reject(new ImageUploadError(describeStorageError(error, file.name), error));
-      },
-      async () => {
-        try {
-          resolve(await getDownloadURL(task.snapshot.ref));
-        } catch (error) {
-          reject(
-            new ImageUploadError('Tải ảnh xong nhưng không lấy được đường dẫn.', error)
-          );
-        }
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', endpoint);
+
+    xhr.upload.onprogress = (event) => {
+      if (onProgress && event.lengthComputable && event.total > 0) {
+        onProgress(Math.round((event.loaded / event.total) * 100));
       }
-    );
+    };
+
+    xhr.onerror = () =>
+      reject(
+        new ImageUploadError(
+          `Mất kết nối khi tải ảnh "${file.name}". Kiểm tra mạng rồi thử lại.`
+        )
+      );
+
+    xhr.onload = () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(
+          new ImageUploadError(describeUploadError(xhr.status, xhr.responseText, file.name))
+        );
+        return;
+      }
+
+      try {
+        const data = JSON.parse(xhr.responseText) as CloudinaryResponse;
+        const url = data.secure_url || data.url;
+
+        if (!url) {
+          reject(new ImageUploadError('Cloudinary không trả về đường dẫn ảnh.'));
+          return;
+        }
+
+        if (data.delete_token) {
+          deleteTokens.set(url, data.delete_token);
+        }
+
+        resolve(url);
+      } catch (error) {
+        reject(new ImageUploadError('Không đọc được phản hồi từ Cloudinary.', error));
+      }
+    };
+
+    xhr.send(form);
   });
 }
 
 /**
- * Xoá một ảnh khỏi Cloud Storage theo URL tải về.
- * Bỏ qua ảnh ngoài (Unsplash...) và ảnh đã bị xoá trước đó.
+ * Xoá một ảnh vừa tải lên trong phiên hiện tại.
+ *
+ * GIỚI HẠN: upload unsigned chỉ xoá được bằng `delete_token` mà Cloudinary trả
+ * về ngay lúc tải lên, và token hết hạn sau 10 phút. Ảnh của xe đã lưu từ
+ * trước KHÔNG xoá được từ trình duyệt — muốn vậy phải có route backend ký bằng
+ * API secret. Hàm này im lặng bỏ qua những trường hợp đó.
  */
 export async function deleteImageByUrl(url: string): Promise<void> {
-  if (!isStorageUrl(url)) return;
+  const token = deleteTokens.get(url);
+  if (!token || !CLOUD_NAME) return;
 
   try {
-    await deleteObject(storageRef(storage, url));
-  } catch (error: any) {
-    // Ảnh không còn tồn tại thì coi như đã xoá xong.
-    if (error?.code === 'storage/object-not-found') return;
-    console.warn('Không xoá được ảnh khỏi Storage:', url, error);
+    const form = new FormData();
+    form.append('token', token);
+
+    await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/delete_by_token`, {
+      method: 'POST',
+      body: form,
+    });
+  } catch (error) {
+    console.warn('Không xoá được ảnh khỏi Cloudinary:', url, error);
+  } finally {
+    deleteTokens.delete(url);
   }
 }
 
-/** Xoá nhiều ảnh cùng lúc; một ảnh lỗi không chặn các ảnh còn lại. */
+/**
+ * Xoá nhiều ảnh cùng lúc; một ảnh lỗi không chặn các ảnh còn lại.
+ *
+ * Cùng giới hạn như {@link deleteImageByUrl}: chỉ có tác dụng với ảnh vừa tải
+ * lên trong 10 phút gần nhất. Ảnh của xe bị xoá sẽ nằm lại trên Cloudinary.
+ */
 export async function deleteImagesByUrls(urls: string[]): Promise<void> {
-  await Promise.allSettled(urls.filter(isStorageUrl).map(deleteImageByUrl));
+  await Promise.allSettled(urls.filter(isCloudinaryUrl).map(deleteImageByUrl));
 }

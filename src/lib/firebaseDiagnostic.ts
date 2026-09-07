@@ -1,14 +1,9 @@
-import {
-  auth,
-  storage,
-  storageRef,
-  uploadBytesResumable,
-  deleteObject,
-  db,
-  collection,
-  getDocs,
-} from './firebase';
+import { auth, db, collection, getDocs } from './firebase';
 import firebaseConfig from '../../firebase-applet-config.json';
+import {
+  isUploadConfigured,
+  describeUploadConfig,
+} from '../services/imageUploadService';
 
 /**
  * CÔNG CỤ CHẨN ĐOÁN FIREBASE (chỉ chạy ở môi trường dev)
@@ -18,10 +13,10 @@ import firebaseConfig from '../../firebase-applet-config.json';
  *
  *   await royalDebug.check()
  *
- * Kiểm tra đủ 3 điều kiện cần để upload ảnh hoạt động:
- *   1. Đã bật Cloud Storage cho dự án chưa
- *   2. storage.rules đã publish và cho phép ghi chưa
- *   3. Có phiên Firebase Auth thật hay không
+ * Kiểm tra 3 điều kiện cần để admin hoạt động đầy đủ:
+ *   1. Có phiên Firebase Auth thật hay không
+ *   2. Firestore đọc được dữ liệu xe chưa
+ *   3. Dịch vụ lưu ảnh (Cloudinary) đã cấu hình chưa
  */
 
 type CheckResult = {
@@ -59,68 +54,24 @@ async function checkAuth(): Promise<CheckResult> {
   };
 }
 
-async function checkStorage(): Promise<CheckResult> {
-  const bucket = firebaseConfig.storageBucket;
-  const path = `cars/__diagnostic__/${Date.now()}.jpg`;
-
-  if (!auth.currentUser) {
+async function checkImageUpload(): Promise<CheckResult> {
+  if (!isUploadConfigured()) {
     return {
       ok: false,
-      label: 'Cloud Storage (ghi thử)',
-      detail: `Bỏ qua vì chưa đăng nhập. Bucket cấu hình: ${bucket}`,
+      label: 'Dịch vụ lưu ảnh (Cloudinary)',
+      detail:
+        describeUploadConfig() +
+        ' Tạo tài khoản tại cloudinary.com, thêm một Upload preset với ' +
+        'Signing Mode = Unsigned, rồi đặt hai biến môi trường đó (file .env ở ' +
+        'local, Environment Variables trên Vercel) và khởi động lại.',
     };
   }
 
-  // Ghi thử một file rỗng rồi xoá ngay: cách duy nhất phân biệt chắc chắn
-  // "chưa bật Storage" với "rules từ chối".
-  const blob = new Blob([new Uint8Array([0])], { type: 'image/jpeg' });
-  const fileRef = storageRef(storage, path);
-
-  // Mặc định SDK thử lại tới 2 phút và làm ngập Console vì mỗi lần thử sinh
-  // 2 dòng lỗi. Chẩn đoán thì cần biết kết quả nhanh, không cần kiên nhẫn.
-  const originalRetryTime = storage.maxUploadRetryTime;
-  storage.maxUploadRetryTime = 8000;
-
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const task = uploadBytesResumable(fileRef, blob, { contentType: 'image/jpeg' });
-      task.on('state_changed', undefined, reject, () => resolve());
-    });
-
-    await deleteObject(fileRef).catch(() => {});
-
-    return {
-      ok: true,
-      label: 'Cloud Storage (ghi thử)',
-      detail: `Ghi và xoá thành công trên bucket ${bucket}. Upload ảnh sẽ hoạt động.`,
-    };
-  } catch (error: any) {
-    const code = error?.code || '(không có mã lỗi)';
-
-    let hint = 'Xem lại cấu hình Storage của dự án.';
-
-    if (code === 'storage/unauthorized') {
-      hint =
-        'Bucket TỒN TẠI nhưng rules từ chối ghi. Publish nội dung storage.rules ' +
-        'trong Console > Storage > Rules.';
-    } else if (code === 'storage/unknown' || code === 'storage/retry-limit-exceeded') {
-      // Bucket không tồn tại thì request OPTIONS bị trả lỗi, và trình duyệt
-      // báo thành "CORS policy" thay vì 404 — dễ bị hiểu nhầm thành lỗi CORS.
-      hint =
-        'Dự án CHƯA bật Cloud Storage (các lỗi "blocked by CORS policy" trong ' +
-        'Console chính là biểu hiện của việc bucket không tồn tại, không phải ' +
-        'lỗi CORS thật). Vào Console > Build > Storage > Get started để tạo bucket, ' +
-        `sau đó đối chiếu tên bucket Firebase cấp với giá trị đang cấu hình: ${bucket}`;
-    }
-
-    return {
-      ok: false,
-      label: 'Cloud Storage (ghi thử)',
-      detail: `Thất bại (${code}) trên bucket ${bucket}. ${hint}`,
-    };
-  } finally {
-    storage.maxUploadRetryTime = originalRetryTime;
-  }
+  return {
+    ok: true,
+    label: 'Dịch vụ lưu ảnh (Cloudinary)',
+    detail: `Đã cấu hình: ${describeUploadConfig()}`,
+  };
 }
 
 async function checkFirestore(): Promise<CheckResult> {
@@ -146,13 +97,13 @@ async function check(): Promise<void> {
 
   line(await checkAuth());
   line(await checkFirestore());
-  line(await checkStorage());
+  line(await checkImageUpload());
 
   console.log('\nCần cả 3 dấu ✅ thì chức năng upload ảnh mới chạy được.');
 }
 
 if (import.meta.env.DEV && typeof window !== 'undefined') {
-  (window as any).royalDebug = { check, auth, db, storage, config: firebaseConfig };
+  (window as any).royalDebug = { check, auth, db, config: firebaseConfig };
   console.info(
     '[royalJPcar] Công cụ chẩn đoán đã sẵn sàng. Gõ trong Console:  await royalDebug.check()'
   );

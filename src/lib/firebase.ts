@@ -22,13 +22,6 @@ import {
   getDocs,
   serverTimestamp 
 } from 'firebase/firestore';
-import {
-  getStorage,
-  ref as storageRef,
-  uploadBytesResumable,
-  getDownloadURL,
-  deleteObject,
-} from 'firebase/storage';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 // Initialize Firebase App singleton
@@ -42,14 +35,10 @@ export const db = firebaseConfig.firestoreDatabaseId && firebaseConfig.firestore
   ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
   : getFirestore(app);
 
-// Cloud Storage: noi luu file anh xe (Firestore chi luu URL).
-export const storage = getStorage(app);
+// Ghi chu: anh xe KHONG dung Firebase Storage (yeu cau goi Blaze co the).
+// Xem src/services/imageUploadService.ts — anh duoc luu tren Cloudinary.
 
 export {
-  storageRef,
-  uploadBytesResumable,
-  getDownloadURL,
-  deleteObject,
   setPersistence,
   browserLocalPersistence,
   browserSessionPersistence,
