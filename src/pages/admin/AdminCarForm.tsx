@@ -1,5 +1,11 @@
-import React, { useState, useEffect } from 'react';
-import { Car, CarStatus, CarCategory } from '../../types';
+import React, { useState, useEffect, useRef } from 'react';
+import { Car, CarStatus, CarCategory, StaffPermissions } from '../../types';
+import {
+  uploadCarImage,
+  deleteImageByUrl,
+  validateImageFile,
+  isDataUrl,
+} from '../../services/imageUploadService';
 import { 
   UploadCloud, 
   Image as ImageIcon, 
@@ -10,12 +16,16 @@ import {
   Plus, 
   Sparkles,
   DollarSign,
-  AlertCircle
+  AlertCircle,
+  Loader2
 } from 'lucide-react';
 
 interface AdminCarFormProps {
   carToEdit?: Car | null;
-  onSaveCar: (carData: Partial<Car>) => void;
+  /** Quyen cua quan tri vien dang dang nhap. Bo trong = tai khoan goc, toan quyen. */
+  permissions?: StaffPermissions;
+  /** Ném lỗi khi lưu thất bại; form sẽ hiển thị thông báo và giữ nguyên dữ liệu đang nhập. */
+  onSaveCar: (carData: Partial<Car>) => void | Promise<void>;
   onCancel: () => void;
 }
 
@@ -55,9 +65,12 @@ const TRANSMISSIONS = [
 
 export const AdminCarForm: React.FC<AdminCarFormProps> = ({
   carToEdit,
+  permissions,
   onSaveCar,
   onCancel,
 }) => {
+  // Khong co ban ghi quyen nghia la tai khoan admin goc => cho phep tat ca.
+  const canChangePrice = !permissions || permissions.cars_change_price;
   // Form State
   const [name, setName] = useState(carToEdit?.name || '');
   const [brand, setBrand] = useState(carToEdit?.brand || 'Mercedes-Benz');
@@ -90,6 +103,26 @@ export const AdminCarForm: React.FC<AdminCarFormProps> = ({
   });
 
   const [imageUrlInput, setImageUrlInput] = useState('');
+
+  // Tien do tai anh dang chay: ten file -> phan tram.
+  const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
+  const isUploading = Object.keys(uploadProgress).length > 0;
+
+  /**
+   * Thu muc gom anh cua xe tren Storage. Xe da co thi dung id that;
+   * xe moi thi dung id ban nhap, giu on dinh suot phien mo form.
+   */
+  const uploadFolderRef = useRef<string>(
+    carToEdit?.id || `draft-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  );
+
+  useEffect(() => {
+    if (carToEdit?.id) uploadFolderRef.current = carToEdit.id;
+  }, [carToEdit]);
+
+  // Anh vua tai len trong phien nay: bi go ra thi xoa luon khoi Storage,
+  // vi chua co ban ghi xe nao tham chieu toi.
+  const sessionUploadsRef = useRef<Set<string>>(new Set());
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -115,21 +148,78 @@ export const AdminCarForm: React.FC<AdminCarFormProps> = ({
     }
   }, [carToEdit]);
 
-  // Handle local file uploads (multiple images)
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  /**
+   * Nen va tai anh len Cloud Storage, roi luu URL vao danh sach.
+   *
+   * Truoc day anh duoc doc thanh base64 va nhet thang vao document Firestore,
+   * nhung Firestore gioi han 1MB/document nen chi mot tam anh dien thoai da
+   * lam thao tac luu that bai.
+   */
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    Array.from(files).forEach((file: File) => {
-      const reader = new FileReader();
-      reader.onload = (uploadEvent: ProgressEvent<FileReader>) => {
-        if (uploadEvent.target?.result) {
-          setImages((prev) => [...prev, uploadEvent.target!.result as string]);
-        }
-      };
-      reader.readAsDataURL(file);
-    });
+    const selected: File[] = Array.from(files) as File[];
     e.target.value = '';
+    setErrorMessage(null);
+
+    // Loc file khong hop le truoc, bao mot lan thay vi bao tung cai.
+    const rejected: string[] = [];
+    const accepted: File[] = [];
+
+    selected.forEach((file) => {
+      const problem = validateImageFile(file);
+      if (problem) rejected.push(problem);
+      else accepted.push(file);
+    });
+
+    if (rejected.length > 0) {
+      setErrorMessage(rejected.join(' '));
+    }
+
+    // Tai song song, moi anh bao tien do rieng.
+    const results = await Promise.allSettled(
+      accepted.map(async (file) => {
+        const key = `${file.name}-${file.size}`;
+        setUploadProgress((prev) => ({ ...prev, [key]: 0 }));
+
+        try {
+          return await uploadCarImage(file, uploadFolderRef.current, (percent) => {
+            setUploadProgress((prev) => ({ ...prev, [key]: percent }));
+          });
+        } finally {
+          setUploadProgress((prev) => {
+            const next = { ...prev };
+            delete next[key];
+            return next;
+          });
+        }
+      })
+    );
+
+    const uploadedUrls: string[] = [];
+    const failures: string[] = [];
+
+    results.forEach((result) => {
+      if (result.status === 'fulfilled') {
+        uploadedUrls.push(result.value);
+        sessionUploadsRef.current.add(result.value);
+      } else {
+        failures.push(
+          result.reason instanceof Error
+            ? result.reason.message
+            : 'Tải ảnh thất bại.'
+        );
+      }
+    });
+
+    if (uploadedUrls.length > 0) {
+      setImages((prev) => [...prev, ...uploadedUrls]);
+    }
+
+    if (failures.length > 0) {
+      setErrorMessage([...rejected, ...failures].join(' '));
+    }
   };
 
   // Add image by URL
@@ -145,7 +235,16 @@ export const AdminCarForm: React.FC<AdminCarFormProps> = ({
       alert('Mỗi xe cần có ít nhất 1 hình ảnh đại diện.');
       return;
     }
+
+    const removed = images[index];
     setImages((prev) => prev.filter((_, i) => i !== index));
+
+    // Chi xoa han khi anh vua duoc tai len trong phien nay va chua duoc luu vao
+    // ban ghi xe. Anh cua xe da luu thi giu lai, phong khi nguoi dung huy form.
+    if (sessionUploadsRef.current.has(removed)) {
+      sessionUploadsRef.current.delete(removed);
+      void deleteImageByUrl(removed);
+    }
   };
 
   // Make cover image
@@ -162,7 +261,7 @@ export const AdminCarForm: React.FC<AdminCarFormProps> = ({
   const numPriceYen = parseInt(priceYen.replace(/\D/g, ''), 10) || 0;
   const approxVndBillion = (numPriceYen * 165) / 1000000000;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
 
@@ -176,6 +275,24 @@ export const AdminCarForm: React.FC<AdminCarFormProps> = ({
       return;
     }
 
+    if (numPriceYen <= 0) {
+      setErrorMessage('Vui lòng nhập giá xe lớn hơn 0.');
+      return;
+    }
+
+    if (isUploading) {
+      setErrorMessage('Vui lòng đợi tải ảnh lên xong rồi hãy lưu.');
+      return;
+    }
+
+    // Chan du lieu cu dang base64 lot vao Firestore va lam vo gioi han 1MB.
+    if (images.some(isDataUrl)) {
+      setErrorMessage(
+        'Album còn ảnh ở dạng nhúng (base64) không thể lưu. Vui lòng xoá và tải lại ảnh đó.'
+      );
+      return;
+    }
+
     setIsSubmitting(true);
 
     const actualBrand = brand === 'Khác' && customBrand.trim() ? customBrand.trim() : brand;
@@ -186,8 +303,11 @@ export const AdminCarForm: React.FC<AdminCarFormProps> = ({
       brand: actualBrand,
       category,
       categoryLabel: category.toUpperCase(),
-      priceRaw: numPriceYen,
-      price: `¥${numPriceYen.toLocaleString()}`,
+      // Khong co quyen sua gia thi giu nguyen gia cu cua xe.
+      priceRaw: canChangePrice ? numPriceYen : carToEdit?.priceRaw ?? numPriceYen,
+      price: canChangePrice
+        ? `¥${numPriceYen.toLocaleString()}`
+        : carToEdit?.price ?? `¥${numPriceYen.toLocaleString()}`,
       year,
       mileage: mileage.trim(),
       fuelType,
@@ -203,10 +323,22 @@ export const AdminCarForm: React.FC<AdminCarFormProps> = ({
       topSpeed: topSpeed.trim() || '280 km/h',
     };
 
-    setTimeout(() => {
-      onSaveCar(carPayload);
+    try {
+      // Cho luu xong that su roi moi tat trang thai dang gui.
+      await onSaveCar(carPayload);
+
+      // Luu thanh cong: anh da thuoc ve ban ghi xe, khong con la anh tam.
+      sessionUploadsRef.current.clear();
+    } catch (error) {
+      console.error('Lỗi khi lưu xe từ form:', error);
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : 'Không thể lưu xe. Vui lòng thử lại.'
+      );
+    } finally {
       setIsSubmitting(false);
-    }, 400);
+    }
   };
 
   return (
@@ -242,7 +374,7 @@ export const AdminCarForm: React.FC<AdminCarFormProps> = ({
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={isSubmitting}
+            disabled={isSubmitting || isUploading}
             className="px-6 py-2 bg-[#17212B] hover:bg-[#C8A96B] text-white hover:text-[#17212B] font-bold text-xs uppercase tracking-wider rounded-lg transition-all shadow-sm flex items-center gap-2 cursor-pointer disabled:opacity-60"
           >
             {isSubmitting ? (
@@ -329,7 +461,11 @@ export const AdminCarForm: React.FC<AdminCarFormProps> = ({
                   onChange={(e) => setPriceYen(e.target.value)}
                   placeholder="VD: 38500000"
                   required
-                  className="w-full px-3.5 py-2.5 rounded-lg bg-[#FAF8F5] border border-[#E2E5E8] text-xs font-bold text-[#17212B] focus:outline-none focus:border-[#C8A96B]"
+                  disabled={!canChangePrice}
+                  title={canChangePrice ? undefined : 'Bạn không có quyền thay đổi giá xe'}
+                  className={`w-full px-3.5 py-2.5 rounded-lg bg-[#FAF8F5] border border-[#E2E5E8] text-xs font-bold text-[#17212B] focus:outline-none focus:border-[#C8A96B] ${
+                    canChangePrice ? '' : 'opacity-60 cursor-not-allowed'
+                  }`}
                 />
                 <span className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-xs font-bold text-[#C8A96B] pointer-events-none">
                   ¥ Yên
@@ -338,6 +474,11 @@ export const AdminCarForm: React.FC<AdminCarFormProps> = ({
               <div className="text-[11px] text-[#69727C] mt-1 font-medium">
                 ≈ {approxVndBillion > 0 ? approxVndBillion.toFixed(2) : 0} tỷ VNĐ (tỷ giá ước tính)
               </div>
+              {!canChangePrice && (
+                <div className="text-[11px] text-amber-600 mt-1 font-medium">
+                  Tài khoản của bạn không được cấp quyền thay đổi giá xe.
+                </div>
+              )}
             </div>
 
             {/* Năm sản xuất */}
@@ -603,13 +744,15 @@ export const AdminCarForm: React.FC<AdminCarFormProps> = ({
                 Chọn ảnh từ máy tính (Có thể chọn nhiều ảnh cùng lúc)
               </span>
               <span className="text-[11px] text-[#69727C] mt-1">
-                Định dạng hỗ trợ: JPG, PNG, WEBP. Dung lượng tối ưu &lt; 5MB/ảnh.
+                JPG, PNG, WebP, AVIF — tối đa 25MB/ảnh. Ảnh được tự động nén và
+                lưu trên Cloud Storage.
               </span>
               <input
                 type="file"
                 multiple
-                accept="image/*"
+                accept="image/jpeg,image/png,image/webp,image/avif"
                 onChange={handleFileUpload}
+                disabled={isUploading}
                 className="hidden"
               />
             </label>
@@ -642,6 +785,31 @@ export const AdminCarForm: React.FC<AdminCarFormProps> = ({
               </div>
             </div>
           </div>
+
+          {/* Upload progress */}
+          {isUploading && (
+            <div className="space-y-2 p-4 rounded-xl bg-[#FAF8F5] border border-[#E2E5E8]">
+              <div className="flex items-center gap-2 text-xs font-bold text-[#17212B]">
+                <Loader2 className="w-3.5 h-3.5 text-[#C8A96B] animate-spin" />
+                <span>Đang tải ảnh lên máy chủ...</span>
+              </div>
+
+              {Object.entries(uploadProgress).map(([key, percent]) => (
+                <div key={key} className="space-y-1">
+                  <div className="flex items-center justify-between text-[11px] text-[#69727C]">
+                    <span className="truncate max-w-[70%]">{key.split('-')[0]}</span>
+                    <span className="font-bold text-[#C8A96B]">{percent}%</span>
+                  </div>
+                  <div className="h-1.5 w-full rounded-full bg-[#E2E5E8] overflow-hidden">
+                    <div
+                      className="h-full bg-[#C8A96B] transition-all duration-200"
+                      style={{ width: `${percent}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Thumbnails list */}
           <div>
@@ -711,7 +879,7 @@ export const AdminCarForm: React.FC<AdminCarFormProps> = ({
           </button>
           <button
             type="submit"
-            disabled={isSubmitting}
+            disabled={isSubmitting || isUploading}
             className="px-8 py-2.5 bg-[#17212B] hover:bg-[#C8A96B] text-white hover:text-[#17212B] font-bold text-xs uppercase tracking-wider rounded-lg transition-all shadow-md flex items-center gap-2 cursor-pointer disabled:opacity-60"
           >
             {isSubmitting ? (

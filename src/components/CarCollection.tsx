@@ -5,7 +5,7 @@ import { Car, CarCategory } from '../types';
 import { useCars } from '../hooks/useCars';
 import { FilterBar } from './FilterBar';
 import { CarCard } from './CarCard';
-import { Sparkles, SlidersHorizontal, Search } from 'lucide-react';
+import { Sparkles, SlidersHorizontal, Search, AlertCircle, RefreshCw } from 'lucide-react';
 
 interface CarCollectionProps {
   onSelectCar: (car: Car) => void;
@@ -18,7 +18,12 @@ export const CarCollection: React.FC<CarCollectionProps> = ({
 }) => {
   const { t, i18n } = useTranslation();
   const isJa = i18n.language === 'ja';
-  const carsData = useCars();
+  const {
+    cars: carsData,
+    isLoading: isLoadingCars,
+    error: carsError,
+    refetch: refetchCars,
+  } = useCars();
 
   const [activeCategory, setActiveCategory] = useState<CarCategory>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -66,7 +71,7 @@ export const CarCollection: React.FC<CarCollectionProps> = ({
       }
       return 0; // featured default order
     });
-  }, [activeCategory, searchQuery, sortBy]);
+  }, [carsData, activeCategory, searchQuery, sortBy]);
 
   return (
     <section
@@ -144,7 +149,41 @@ export const CarCollection: React.FC<CarCollectionProps> = ({
         </div>
 
         {/* Cars Grid */}
-        {filteredCars.length > 0 ? (
+        {isLoadingCars ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-8">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div
+                key={i}
+                className="animate-pulse bg-[#F7F5F0] border border-[#E2E5E8] rounded-xl overflow-hidden"
+              >
+                <div className="aspect-[16/10] bg-[#E2E5E8]" />
+                <div className="p-5 space-y-3">
+                  <div className="h-4 w-3/4 bg-[#E2E5E8] rounded-sm" />
+                  <div className="h-3 w-1/2 bg-[#E2E5E8] rounded-sm" />
+                  <div className="h-3 w-1/3 bg-[#E2E5E8] rounded-sm" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : carsError ? (
+          <div className="text-center py-16 bg-[#F7F5F0] rounded-xl border border-[#E2E5E8]">
+            <AlertCircle className="w-8 h-8 text-[#C8A96B] mx-auto mb-3" />
+            <p className="text-sm font-serif font-bold text-[#17212B] mb-2">
+              {isJa ? '車両情報を読み込めませんでした' : 'Không tải được danh sách xe'}
+            </p>
+            <p className="text-xs text-[#69727C] max-w-md mx-auto mb-5">
+              {carsError}
+            </p>
+            <button
+              type="button"
+              onClick={() => refetchCars()}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-sm bg-[#17212B] text-white text-xs font-semibold uppercase hover:bg-[#C8A96B] hover:text-[#17212B] transition-colors cursor-pointer"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              {isJa ? '再読み込み' : 'Thử lại'}
+            </button>
+          </div>
+        ) : filteredCars.length > 0 ? (
           <motion.div
             layout
             className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-8"

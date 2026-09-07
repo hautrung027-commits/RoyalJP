@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { AdminTab, AdminUser, Car, CarStatus, CustomerInquiry, StaffPermissions } from '../../types';
-import { CarsStorageService } from '../../services/carsStorage';
+import { CarsStorageService, CarValidationError } from '../../services/carsStorage';
 import { AdminAuthService } from '../../services/adminAuthService';
+import { useCars } from '../../hooks/useCars';
 import { AdminLogin } from './AdminLogin';
 import { AdminOverview } from './AdminOverview';
 import { AdminCarList } from './AdminCarList';
@@ -22,7 +23,9 @@ import {
   ShieldCheck,
   Check,
   ShieldAlert,
-  Lock
+  Lock,
+  AlertCircle,
+  RefreshCw
 } from 'lucide-react';
 
 interface AdminPortalProps {
@@ -43,7 +46,17 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onBackToWebsite }) => 
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   // Data states
-  const [cars, setCars] = useState<Car[]>(() => CarsStorageService.getCars());
+  // Kho xe dùng chung hook với website: đã xử lý async, loading, error và
+  // tự đồng bộ qua sự kiện 'royaljpcar-cars-updated'.
+  const {
+    cars,
+    isLoading: isLoadingCars,
+    error: carsError,
+    refetch: refetchCars,
+    mutateLocal: mutateCarsLocal,
+    restore: restoreCars,
+  } = useCars();
+
   const [inquiries, setInquiries] = useState<CustomerInquiry[]>(() => CarsStorageService.getInquiries());
 
   // Toast notification
@@ -128,20 +141,15 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onBackToWebsite }) => 
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, [adminUser]);
 
-  // Sync cars & inquiries updates
+  // Sync inquiries updates (kho xe đã được useCars tự đồng bộ)
   useEffect(() => {
-    const handleCarsUpdate = () => {
-      setCars(CarsStorageService.getCars());
-    };
     const handleInquiriesUpdate = () => {
       setInquiries(CarsStorageService.getInquiries());
     };
 
-    window.addEventListener('royaljpcar-cars-updated', handleCarsUpdate);
     window.addEventListener('royaljpcar-inquiries-updated', handleInquiriesUpdate);
 
     return () => {
-      window.removeEventListener('royaljpcar-cars-updated', handleCarsUpdate);
       window.removeEventListener('royaljpcar-inquiries-updated', handleInquiriesUpdate);
     };
   }, []);
@@ -179,11 +187,50 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onBackToWebsite }) => 
     window.location.hash = hashMapping[tab] || '#/admin/dashboard';
   };
 
- const handleSaveCar = async (carData: Partial<Car>) => {
-  try {
+  /**
+   * Kiểm tra quyền của quản trị viên đang đăng nhập.
+   * Không có bản ghi quyền (tài khoản admin gốc) thì mặc định cho phép.
+   */
+  const can = (permission: keyof StaffPermissions): boolean => {
+    const current = adminUser?.permissions;
+    if (!current) return true;
+    return current[permission] === true;
+  };
+
+  const STATUS_LABELS: Record<CarStatus, string> = {
+    available: 'Đang bán',
+    reserved: 'Đặt cọc',
+    sold: 'Đã bán',
+  };
+
+  /**
+   * Lưu xe. Ném lỗi ngược lên cho form để form tự hiển thị và giữ nguyên
+   * dữ liệu người dùng đang nhập dở khi thất bại.
+   */
+  const handleSaveCar = async (carData: Partial<Car>) => {
     const isEdit = !!carData.id;
 
-    await CarsStorageService.saveCar(carData);
+    if (isEdit && !can('cars_edit')) {
+      throw new Error('Tài khoản của bạn không được cấp quyền chỉnh sửa xe.');
+    }
+    if (!isEdit && !can('cars_add')) {
+      throw new Error('Tài khoản của bạn không được cấp quyền thêm xe mới.');
+    }
+
+    try {
+      await CarsStorageService.saveCar(carData);
+    } catch (error) {
+      console.error('Lỗi khi lưu xe:', error);
+
+      if (error instanceof CarValidationError) {
+        // Lỗi dữ liệu: hiển thị đúng từng trường sai cho người dùng sửa.
+        throw new Error(error.errors.join('\n'));
+      }
+
+      throw new Error(
+        'Không thể lưu xe lên máy chủ. Vui lòng kiểm tra kết nối và thử lại.'
+      );
+    }
 
     setEditingCar(null);
     navigateToTab('cars');
@@ -193,23 +240,45 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onBackToWebsite }) => 
         ? 'Đã cập nhật thông tin xe thành công!'
         : 'Đã thêm mẫu xe mới vào showroom!'
     );
-  } catch (error) {
-    console.error('Lỗi khi lưu xe:', error);
+  };
 
-    showToast('Không thể lưu xe lên Firebase!');
-  }
-};
+  const handleDeleteCar = async (id: string) => {
+    if (!can('cars_delete')) {
+      showToast('Tài khoản của bạn không được cấp quyền xóa xe.');
+      return;
+    }
 
-  const handleDeleteCar = (id: string) => {
-    const success = CarsStorageService.deleteCar(id);
+    // Optimistic: bỏ xe khỏi danh sách ngay, rollback nếu server từ chối.
+    const snapshot = mutateCarsLocal((prev) => prev.filter((c) => c.id !== id));
+
+    const success = await CarsStorageService.deleteCar(id);
+
     if (success) {
       showToast('Đã xóa mẫu xe khỏi danh sách.');
+    } else {
+      restoreCars(snapshot);
+      showToast('Không thể xóa xe. Danh sách đã được khôi phục.');
     }
   };
 
-  const handleUpdateCarStatus = (id: string, status: CarStatus) => {
-    CarsStorageService.updateCarStatus(id, status);
-    showToast(`Đã chuyển trạng thái xe sang "${status === 'available' ? 'Đang bán' : status === 'reserved' ? 'Đặt cọc' : 'Đã bán'}"`);
+  const handleUpdateCarStatus = async (id: string, status: CarStatus) => {
+    if (!can('cars_change_status')) {
+      showToast('Tài khoản của bạn không được cấp quyền đổi trạng thái xe.');
+      return;
+    }
+
+    const snapshot = mutateCarsLocal((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, status } : c))
+    );
+
+    const success = await CarsStorageService.updateCarStatus(id, status);
+
+    if (success) {
+      showToast(`Đã chuyển trạng thái xe sang "${STATUS_LABELS[status]}"`);
+    } else {
+      restoreCars(snapshot);
+      showToast('Không thể cập nhật trạng thái xe. Vui lòng thử lại.');
+    }
   };
 
   const handleEditCar = (car: Car) => {
@@ -544,9 +613,33 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onBackToWebsite }) => 
           {activeTab === 'cars' && (
             perms && !perms.cars_view ? (
               <PermissionDenied message="Tài khoản của bạn không được cấp quyền xem Danh Sách Kho Xe." />
+            ) : isLoadingCars ? (
+              <div className="flex flex-col items-center justify-center py-24 gap-3">
+                <RefreshCw className="w-7 h-7 text-[#C8A96B] animate-spin" />
+                <p className="text-sm text-[#69727C]">Đang tải kho xe từ máy chủ...</p>
+              </div>
+            ) : carsError ? (
+              <div className="text-center py-20 px-6 bg-white rounded-xl border border-[#E2E5E8]">
+                <AlertCircle className="w-9 h-9 text-red-500 mx-auto mb-3" />
+                <p className="text-base font-serif font-bold text-[#17212B] mb-2">
+                  Không tải được kho xe
+                </p>
+                <p className="text-sm text-[#69727C] max-w-md mx-auto mb-5">
+                  {carsError}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => refetchCars()}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-sm bg-[#17212B] text-white text-xs font-semibold uppercase hover:bg-[#C8A96B] hover:text-[#17212B] transition-colors cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  Thử lại
+                </button>
+              </div>
             ) : (
               <AdminCarList
                 cars={cars}
+                permissions={perms}
                 onAddNewCar={handleAddNewCar}
                 onEditCar={handleEditCar}
                 onDeleteCar={handleDeleteCar}
@@ -563,6 +656,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onBackToWebsite }) => 
             ) : (
               <AdminCarForm
                 carToEdit={editingCar}
+                permissions={perms}
                 onSaveCar={handleSaveCar}
                 onCancel={() => {
                   setEditingCar(null);

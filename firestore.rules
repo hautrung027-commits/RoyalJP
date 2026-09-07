@@ -1,39 +1,139 @@
 rules_version = '2';
+
+// ============================================================================
+// ROYAL JPcar — Firestore Security Rules
+//
+// GIỚI HẠN HIỆN TẠI (đọc trước khi sửa):
+// Quyền hạn nhân viên (StaffPermissions) đang được lưu trong localStorage của
+// từng trình duyệt, KHÔNG nằm trên Firestore, và document `staff_accounts` được
+// đánh id theo `staff-00x` chứ không theo Firebase Auth UID.
+//
+// Vì vậy các rule dưới đây KHÔNG THỂ kiểm tra quyền của người gọi — không có
+// cách nào tra `staff_accounts/$(request.auth.uid)` khi document đó không tồn
+// tại. Muốn phân quyền thật sự ở tầng máy chủ, phải làm bước tiền đề:
+//   1. Lưu staff account lên Firestore với document id CHÍNH LÀ Firebase UID.
+//   2. Cho ứng dụng đọc quyền từ Firestore thay vì localStorage.
+// Sau đó mới bật được các hàm hasPermission()/isSuperAdmin() ở cuối file.
+//
+// Những gì file này đang bảo vệ được:
+//   - Chặn ghi ẩn danh vào kho xe / cài đặt.
+//   - Ràng buộc kiểu và giá trị dữ liệu xe (giá > 0, đủ trường bắt buộc).
+//   - Chặn ảnh base64 nhúng thẳng vào document (xem imageUploadService.ts).
+//   - Chặn một tài khoản ghi đè document nhân viên của người khác.
+//   - Chặn đọc trộm thông tin liên hệ khách hàng khi chưa đăng nhập.
+// ============================================================================
+
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Helper functions
+
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+
     function isSignedIn() {
       return request.auth != null;
     }
-    
-    function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
+
+    function incoming() {
+      return request.resource.data;
     }
 
-    // Staff accounts collection
-    match /staff_accounts/{staffId} {
-      // Authenticated users can read staff documents or check permissions
-      allow read: if isSignedIn();
-      // Allow user to update their own lastLogin or Super Admins to write
-      allow write: if isSignedIn();
+    // Ảnh phải là URL. Chuỗi base64 ("data:image/jpeg;base64,...") sẽ làm
+    // document vượt giới hạn 1MB của Firestore và khiến thao tác lưu thất bại.
+    function isUrlNotDataUri(value) {
+      return value is string
+        && value.size() > 0
+        && value.size() < 2000
+        && !value.matches('data:.*');
     }
 
-    // Cars collection
+    function isNonEmptyString(value, maxLen) {
+      return value is string && value.size() > 0 && value.size() <= maxLen;
+    }
+
+    // ------------------------------------------------------------------
+    // CARS — kho xe hiển thị công khai trên website
+    // ------------------------------------------------------------------
+
+    function isValidCar() {
+      return isNonEmptyString(incoming().name, 120)
+        && incoming().category in ['sedan', 'suv', 'mpv', 'hatchback', 'pickup']
+        && incoming().priceRaw is number
+        && incoming().priceRaw > 0
+        && incoming().priceRaw <= 100000000000
+        && isUrlNotDataUri(incoming().image)
+        // Không thể duyệt từng phần tử của mảng trong Firestore Rules, nên chỉ
+        // giới hạn số lượng; giới hạn 1MB/document lo phần dung lượng còn lại.
+        && (!('images' in incoming()) || incoming().images.size() <= 20)
+        && (!('status' in incoming())
+            || incoming().status in ['available', 'reserved', 'sold']);
+    }
+
     match /cars/{carId} {
+      // Khách vào website phải xem được xe mà không cần đăng nhập.
       allow read: if true;
-      allow write: if isSignedIn();
+
+      allow create, update: if isSignedIn() && isValidCar();
+      allow delete: if isSignedIn();
     }
 
-    // Customer Inquiries
+    // ------------------------------------------------------------------
+    // STAFF ACCOUNTS
+    //
+    // Trước đây: `allow write: if isSignedIn()` — bất kỳ tài khoản đăng nhập
+    // nào cũng ghi đè được hồ sơ của MỌI nhân viên khác.
+    // Giờ: chỉ ghi được document mang đúng uid của chính mình.
+    //
+    // Lưu ý: rule này CHƯA chặn được việc tự nâng quyền trong chính document
+    // của mình. Chặn được điều đó đòi hỏi bước tiền đề nêu ở đầu file.
+    // ------------------------------------------------------------------
+
+    match /staff_accounts/{staffId} {
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn() && incoming().uid == request.auth.uid;
+
+      allow update: if isSignedIn()
+        && resource.data.uid == request.auth.uid
+        && incoming().uid == request.auth.uid;
+
+      // Xoá tài khoản nhân viên là thao tác quản trị, không mở cho client.
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // INQUIRIES — yêu cầu tư vấn / đặt lịch của khách
+    // ------------------------------------------------------------------
+
+    function isValidInquiry() {
+      return isNonEmptyString(incoming().customerName, 120)
+        && isNonEmptyString(incoming().phone, 30)
+        && incoming().type in
+             ['consultation', 'test_drive', 'deposit', 'custom_order']
+        && (!('message' in incoming()) || incoming().message.size() <= 2000)
+        && (!('email' in incoming()) || incoming().email.size() <= 200);
+    }
+
     match /inquiries/{inquiryId} {
-      allow create: if true;
+      // Form liên hệ trên website gửi được khi chưa đăng nhập, nhưng phải
+      // đúng định dạng để tránh rác.
+      allow create: if isValidInquiry();
+
+      // Chứa thông tin liên hệ khách hàng — không mở cho người chưa đăng nhập.
       allow read, update, delete: if isSignedIn();
     }
 
-    // Showroom settings
+    // ------------------------------------------------------------------
+    // SETTINGS — cấu hình showroom hiển thị công khai
+    // ------------------------------------------------------------------
+
     match /settings/{settingId} {
       allow read: if true;
       allow write: if isSignedIn();
     }
+
+    // ------------------------------------------------------------------
+    // Mặc định: mọi collection không khai báo ở trên đều bị từ chối.
+    // ------------------------------------------------------------------
   }
 }

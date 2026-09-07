@@ -1,0 +1,44 @@
+rules_version = '2';
+
+// ============================================================================
+// ROYAL JPcar — Cloud Storage Security Rules
+//
+// Ảnh xe được nén ở trình duyệt rồi tải lên đây (xem imageUploadService.ts);
+// Firestore chỉ lưu URL trả về. Bucket này phải cho đọc công khai để website
+// hiển thị được ảnh cho khách chưa đăng nhập.
+//
+// Cùng giới hạn như firestore.rules: chưa kiểm tra được quyền chi tiết của
+// người gọi vì quyền nhân viên chưa nằm trên Firestore. Xem phần đầu
+// firestore.rules để biết bước tiền đề.
+// ============================================================================
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isImageUnder(maxBytes) {
+      return request.resource.contentType.matches('image/.*')
+        && request.resource.size < maxBytes;
+    }
+
+    // Ảnh xe: cars/{carId hoặc draftId}/{tên file}
+    match /cars/{ownerId}/{fileName} {
+      // Khách xem website phải tải được ảnh mà không cần đăng nhập.
+      allow read: if true;
+
+      // Ảnh đã được nén xuống ~600KB trước khi tải lên; 10MB là biên an toàn
+      // cho trường hợp trình duyệt không giải mã được (HEIC) và gửi file gốc.
+      allow write: if isSignedIn() && isImageUnder(10 * 1024 * 1024);
+
+      allow delete: if isSignedIn();
+    }
+
+    // Mặc định từ chối mọi đường dẫn khác.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

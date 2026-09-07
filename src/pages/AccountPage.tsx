@@ -122,7 +122,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({
 }) => {
   const { t, i18n } = useTranslation();
   const isJa = i18n.language === 'ja';
-  const carsData = useCars();
+  const { cars: carsData } = useCars();
 
   // Accounts database persisted in localStorage
   const [accounts, setAccounts] = useState<UserProfile[]>(() => {
