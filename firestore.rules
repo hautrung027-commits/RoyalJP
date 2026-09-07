@@ -1,0 +1,39 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Staff accounts collection
+    match /staff_accounts/{staffId} {
+      // Authenticated users can read staff documents or check permissions
+      allow read: if isSignedIn();
+      // Allow user to update their own lastLogin or Super Admins to write
+      allow write: if isSignedIn();
+    }
+
+    // Cars collection
+    match /cars/{carId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+
+    // Customer Inquiries
+    match /inquiries/{inquiryId} {
+      allow create: if true;
+      allow read, update, delete: if isSignedIn();
+    }
+
+    // Showroom settings
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+  }
+}

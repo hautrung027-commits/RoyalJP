@@ -1,0 +1,26 @@
+{
+  "entities": {
+    "staff_accounts": {
+      "title": "Staff Account",
+      "description": "Showroom staff accounts with roles, branches, and granular permissions",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "fullName": { "type": "string" },
+        "username": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "phone": { "type": "string" },
+        "position": { "type": "string" },
+        "branch": { "type": "string" },
+        "role": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "suspended", "resigned"] },
+        "permissions": { "type": "object" },
+        "avatarUrl": { "type": "string" },
+        "lastLogin": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["uid", "fullName", "email", "role", "status", "permissions"]
+    }
+  }
+}

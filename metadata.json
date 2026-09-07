@@ -1,0 +1,7 @@
+{
+  "name": "royalJPcar - Luxury Automotive Showroom Japan",
+  "description": "royalJPcar - Showroom siêu xe và xe sang cao cấp tại Tokyo, Nhật Bản. Trải nghiệm kiệt tác chuyển động đỉnh cao.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
